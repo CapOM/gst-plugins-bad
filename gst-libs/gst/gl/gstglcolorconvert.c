@@ -1620,7 +1620,7 @@ _do_convert_one_view (GstGLContext * context, GstGLColorConvert * convert,
       if (!convert->priv->out_tex[j])
         convert->priv->out_tex[j] =
             (GstGLMemory *) gst_gl_memory_alloc (context, NULL, &temp_info, 0,
-            NULL);
+            NULL, GL_TEXTURE_2D);
     } else {
       convert->priv->out_tex[j] = out_tex;
     }
@@ -1721,7 +1721,7 @@ _do_convert (GstGLContext * context, GstGLColorConvert * convert)
 
   convert->outbuf = gst_buffer_new ();
   if (!gst_gl_memory_setup_buffer (convert->context, NULL, &convert->out_info,
-          NULL, convert->outbuf)) {
+          NULL, GL_TEXTURE_2D, convert->outbuf)) {
     convert->priv->result = FALSE;
     return;
   }

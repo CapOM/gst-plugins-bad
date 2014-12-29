@@ -1658,7 +1658,7 @@ _gen_buffer (GstGLViewConvert * viewconvert, GstBuffer ** target)
 {
   *target = gst_buffer_new ();
   if (!gst_gl_memory_setup_buffer (viewconvert->context, NULL,
-          &viewconvert->out_info, NULL, *target)) {
+          &viewconvert->out_info, NULL, GL_TEXTURE_2D, *target)) {
     return FALSE;
   }
   gst_buffer_add_video_meta_full (*target, 0,
@@ -1782,7 +1782,7 @@ _do_view_convert (GstGLContext * context, GstGLViewConvert * viewconvert)
       if (!priv->out_tex[j])
         priv->out_tex[j] =
             (GstGLMemory *) gst_gl_memory_alloc (context, NULL, &temp_info, 0,
-            NULL);
+            NULL, GL_TEXTURE_2D);
     } else {
       priv->out_tex[j] = out_tex;
     }

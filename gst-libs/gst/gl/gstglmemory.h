@@ -105,7 +105,8 @@ GstMemory *   gst_gl_memory_alloc   (GstGLContext * context,
                                      GstAllocationParams *params,
                                      GstVideoInfo * info,
                                      guint plane,
-                                     GstVideoAlignment *valign);
+                                     GstVideoAlignment *valign,
+                                     guint target);
 GstGLMemory * gst_gl_memory_wrapped (GstGLContext * context,
                                      GstVideoInfo * info,
                                      guint plane,
@@ -137,6 +138,7 @@ gboolean      gst_gl_memory_setup_buffer  (GstGLContext * context,
                                            GstAllocationParams * params,
                                            GstVideoInfo * info,
                                            GstVideoAlignment *valign,
+                                           guint target,
                                            GstBuffer * buffer);
 gboolean      gst_gl_memory_setup_wrapped (GstGLContext * context,
                                            GstVideoInfo * info,

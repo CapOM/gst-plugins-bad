@@ -276,7 +276,7 @@ gst_gl_buffer_pool_alloc (GstBufferPool * pool, GstBuffer ** buffer,
 #endif
 
   if (!gst_gl_memory_setup_buffer (glpool->context, &priv->params, info,
-          valign, buf))
+          valign, GL_TEXTURE_2D, buf))
     goto mem_create_failed;
 
   if (priv->add_uploadmeta)

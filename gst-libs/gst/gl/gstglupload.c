@@ -417,7 +417,8 @@ _egl_image_upload_perform_gl_thread (GstGLContext * context,
   /* FIXME: buffer pool */
   *image->outbuf = gst_buffer_new ();
   gst_gl_memory_setup_buffer (image->upload->context,
-      NULL, &image->upload->priv->out_info, NULL, *image->outbuf);
+      NULL, &image->upload->priv->out_info, NULL, GL_TEXTURE_2D,
+      *image->outbuf);
 
   n = gst_buffer_n_memory (image->buffer);
   for (i = 0; i < n; i++) {
@@ -435,8 +436,8 @@ _egl_image_upload_perform_gl_thread (GstGLContext * context,
   }
 
   if (GST_IS_GL_BUFFER_POOL (image->buffer->pool))
-    gst_gl_buffer_pool_replace_last_buffer (GST_GL_BUFFER_POOL (image->
-            buffer->pool), image->buffer);
+    gst_gl_buffer_pool_replace_last_buffer (GST_GL_BUFFER_POOL (image->buffer->
+            pool), image->buffer);
 }
 
 static GstGLUploadReturn
@@ -574,11 +575,11 @@ _upload_meta_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
   gpointer handle;
 
   gl_apis =
-      gst_gl_api_to_string (gst_gl_context_get_gl_api (upload->upload->
-          context));
-  platform =
-      gst_gl_platform_to_string (gst_gl_context_get_gl_platform (upload->
+      gst_gl_api_to_string (gst_gl_context_get_gl_api (upload->
           upload->context));
+  platform =
+      gst_gl_platform_to_string (gst_gl_context_get_gl_platform
+      (upload->upload->context));
   handle = (gpointer) gst_gl_context_get_gl_context (upload->upload->context);
 
   gl_context =
@@ -631,7 +632,7 @@ _upload_meta_upload_perform (gpointer impl, GstBuffer * buffer,
   /* FIXME: buffer pool */
   *outbuf = gst_buffer_new ();
   gst_gl_memory_setup_buffer (upload->upload->context,
-      NULL, &upload->upload->priv->in_info, NULL, *outbuf);
+      NULL, &upload->upload->priv->in_info, NULL, GL_TEXTURE_2D, *outbuf);
 
   for (i = 0; i < GST_GL_UPLOAD_MAX_PLANES; i++) {
     guint tex_id = 0;
