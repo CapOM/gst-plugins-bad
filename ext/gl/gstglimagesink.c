@@ -87,6 +87,7 @@
 #include "config.h"
 #endif
 
+#include <gst/allocators/gstdmabuf.h>
 #include <gst/video/videooverlay.h>
 #include <gst/video/navigation.h>
 
@@ -582,6 +583,7 @@ gst_glimage_sink_init (GstGLImageSink * glimage_sink)
   glimage_sink->par_n = 0;
   glimage_sink->par_d = 1;
   glimage_sink->redisplay_texture = 0;
+  glimage_sink->redisplay_tex_target = 0;
   glimage_sink->handle_events = TRUE;
   glimage_sink->ignore_alpha = TRUE;
   glimage_sink->overlay_compositor = NULL;
@@ -1340,6 +1342,8 @@ prepare_next_buffer (GstGLImageSink * glimage_sink)
 
   GST_GLIMAGE_SINK_LOCK (glimage_sink);
   glimage_sink->next_tex = *(guint *) gl_frame.data[0];
+  glimage_sink->next_tex_target =
+      ((GstGLMemory *) (gst_buffer_peek_memory (next_buffer, 0)))->tex_target;
 
   old_buffer = glimage_sink->next_buffer;
   glimage_sink->next_buffer = next_buffer;
@@ -1675,6 +1679,16 @@ _unbind_buffer (GstGLImageSink * gl_sink)
   gl->DisableVertexAttribArray (gl_sink->attr_texture);
 }
 
+static const gchar *texture_fragment_shader_egl_external =
+    "#extension GL_OES_EGL_image_external : require     \n"
+    "precision mediump float;                           \n"
+    "varying vec2 v_texcoord;                           \n"
+    "uniform samplerExternalOES tex;                    \n"
+    "void main()                                        \n"
+    "{                                                  \n"
+    "   gl_FragColor = texture2D(tex, v_texcoord)       \n;"
+    "}                                                  \n";
+
 /* Called in the gl thread */
 static void
 gst_glimage_sink_thread_init_redisplay (GstGLImageSink * gl_sink)
@@ -1683,10 +1697,17 @@ gst_glimage_sink_thread_init_redisplay (GstGLImageSink * gl_sink)
 
   gl_sink->redisplay_shader = gst_gl_shader_new (gl_sink->context);
 
-  if (!gst_gl_shader_compile_with_default_vf_and_check
-      (gl_sink->redisplay_shader, &gl_sink->attr_position,
-          &gl_sink->attr_texture))
-    gst_glimage_sink_cleanup_glthread (gl_sink);
+  if (gl_sink->redisplay_tex_target == GL_TEXTURE_EXTERNAL_OES) {
+    if (!gst_gl_shader_compile_with_default_v_and_check
+        (gl_sink->redisplay_shader, texture_fragment_shader_egl_external,
+            &gl_sink->attr_position, &gl_sink->attr_texture))
+      gst_glimage_sink_cleanup_glthread (gl_sink);
+  } else {
+    if (!gst_gl_shader_compile_with_default_vf_and_check
+        (gl_sink->redisplay_shader, &gl_sink->attr_position,
+            &gl_sink->attr_texture))
+      gst_glimage_sink_cleanup_glthread (gl_sink);
+  }
 
   if (gl->GenVertexArrays) {
     gl->GenVertexArrays (1, &gl_sink->vao);
@@ -1833,6 +1854,7 @@ gst_glimage_sink_on_draw (GstGLImageSink * gl_sink)
   gboolean do_redisplay = FALSE;
   GstGLSyncMeta *sync_meta = NULL;
   GstSample *sample = NULL;
+  GLenum tex_target = 0;
 
   g_return_if_fail (GST_IS_GLIMAGE_SINK (gl_sink));
 
@@ -1846,6 +1868,8 @@ gst_glimage_sink_on_draw (GstGLImageSink * gl_sink)
     return;
   }
 
+  tex_target = gl_sink->redisplay_tex_target;
+
   window = gst_gl_context_get_window (gl_sink->context);
   window->is_drawing = TRUE;
 
@@ -1858,10 +1882,11 @@ gst_glimage_sink_on_draw (GstGLImageSink * gl_sink)
 
   /* make sure that the environnement is clean */
   gst_gl_context_clear_shader (gl_sink->context);
-  gl->BindTexture (GL_TEXTURE_2D, 0);
+  gl->BindTexture (GL_TEXTURE_2D, tex_target);
+
 #if GST_GL_HAVE_OPENGL
   if (USING_OPENGL (gl_sink->context))
-    gl->Disable (GL_TEXTURE_2D);
+    gl->Disable (tex_target);
 #endif
 
   sample = gst_sample_new (gl_sink->stored_buffer[0],
@@ -1899,7 +1924,7 @@ gst_glimage_sink_on_draw (GstGLImageSink * gl_sink)
       _bind_buffer (gl_sink);
 
     gl->ActiveTexture (GL_TEXTURE0);
-    gl->BindTexture (GL_TEXTURE_2D, gl_sink->redisplay_texture);
+    gl->BindTexture (tex_target, gl_sink->redisplay_texture);
     gst_gl_shader_set_uniform_1i (gl_sink->redisplay_shader, "tex", 0);
 
     gl->DrawElements (GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
@@ -1961,22 +1986,6 @@ gst_glimage_sink_redisplay (GstGLImageSink * gl_sink)
         gst_gl_image_sink_bin_signals[SIGNAL_BIN_CLIENT_DRAW], 0,
         NULL, NULL, NULL);
 
-    if (G_UNLIKELY (!gl_sink->redisplay_shader) && (!handler_id
-            || !gl_sink->other_context)) {
-      gst_gl_window_send_message (window,
-          GST_GL_WINDOW_CB (gst_glimage_sink_thread_init_redisplay), gl_sink);
-
-      /* if the shader is still null it means it failed to be useable */
-      if (G_UNLIKELY (!gl_sink->redisplay_shader)) {
-        gst_object_unref (window);
-        return FALSE;
-      }
-
-      gst_gl_window_set_preferred_size (window, GST_VIDEO_SINK_WIDTH (gl_sink),
-          GST_VIDEO_SINK_HEIGHT (gl_sink));
-      gst_gl_window_show (window);
-    }
-
     /* Recreate the output texture if needed */
     GST_GLIMAGE_SINK_LOCK (gl_sink);
     if (gl_sink->output_mode_changed && gl_sink->input_buffer != NULL) {
@@ -1993,6 +2002,7 @@ gst_glimage_sink_redisplay (GstGLImageSink * gl_sink)
 
     /* Avoid to release the texture while drawing */
     gl_sink->redisplay_texture = gl_sink->next_tex;
+    gl_sink->redisplay_tex_target = gl_sink->next_tex_target;
     old_stored_buffer[0] = gl_sink->stored_buffer[0];
     old_stored_buffer[1] = gl_sink->stored_buffer[1];
     gl_sink->stored_buffer[0] = gst_buffer_ref (gl_sink->next_buffer);
@@ -2009,6 +2019,22 @@ gst_glimage_sink_redisplay (GstGLImageSink * gl_sink)
     gst_buffer_replace (old_stored_buffer + 1, NULL);
     if (old_sync)
       gst_buffer_unref (old_sync);
+
+    if (G_UNLIKELY (!gl_sink->redisplay_shader) && (!handler_id
+            || !gl_sink->other_context)) {
+      gst_gl_window_send_message (window,
+          GST_GL_WINDOW_CB (gst_glimage_sink_thread_init_redisplay), gl_sink);
+
+      /* if the shader is still null it means it failed to be useable */
+      if (G_UNLIKELY (!gl_sink->redisplay_shader)) {
+        gst_object_unref (window);
+        return FALSE;
+      }
+
+      gst_gl_window_set_preferred_size (window, GST_VIDEO_SINK_WIDTH (gl_sink),
+          GST_VIDEO_SINK_HEIGHT (gl_sink));
+      gst_gl_window_show (window);
+    }
 
     /* Drawing is asynchronous: gst_gl_window_draw is not blocking
      * It means that it does not wait for stuff to be executed in other threads

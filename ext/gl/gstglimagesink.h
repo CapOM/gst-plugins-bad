@@ -84,6 +84,7 @@ struct _GstGLImageSink
     GstBuffer *input_buffer2;
 
     guint      next_tex;
+    guint      next_tex_target;
     GstBuffer *next_buffer;
     GstBuffer *next_buffer2; /* frame-by-frame 2nd view */
     GstBuffer *next_sync;
@@ -97,6 +98,7 @@ struct _GstGLImageSink
     GstBuffer *stored_buffer[2];
     GstBuffer *stored_sync;
     GLuint redisplay_texture;
+    GLuint redisplay_tex_target;
 
     gboolean caps_change;
     guint window_width;
