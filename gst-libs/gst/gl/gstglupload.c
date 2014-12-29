@@ -31,6 +31,8 @@
 #include "egl/gsteglimagememory.h"
 #endif
 
+#include <gst/allocators/gstdmabuf.h>
+
 /**
  * SECTION:gstglupload
  * @short_description: an object that uploads to GL textures
@@ -485,6 +487,295 @@ static const UploadMethod _egl_image_upload = {
   &_egl_image_upload_release,
   &_egl_image_upload_free
 };
+
+#if GST_GL_HAVE_GLES2
+struct DmabufUpload
+{
+  GstGLUpload *upload;
+  GstBuffer *buffer;
+  GstBuffer **outbuf;
+};
+
+static gpointer
+_dma_buf_upload_new (GstGLUpload * upload)
+{
+  struct DmabufUpload *dmabuf = g_new0 (struct DmabufUpload, 1);
+  dmabuf->upload = upload;
+  return dmabuf;
+}
+
+static GstCaps *
+_dma_buf_upload_transform_caps (GstGLContext * context,
+    GstPadDirection direction, GstCaps * caps)
+{
+  GstCaps *ret = NULL;
+
+  if (direction == GST_PAD_SINK) {
+    ret = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
+    gst_caps_set_simple (ret, "format", G_TYPE_STRING, "RGBA", NULL);
+  } else {
+    ret = _set_caps_features (caps, "memory:" GST_ALLOCATOR_DMABUF);
+    /* FIXME replace with { RGBA, BGRA, RGBx, BGRx, RGB16 } */
+    gst_caps_set_simple (ret, "format", G_TYPE_STRING, "RGBA", NULL);
+  }
+
+  return ret;
+}
+
+static gboolean
+_dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
+    GstCaps * out_caps)
+{
+  struct DmabufUpload *dmabuf = impl;
+
+  if ((gst_gl_context_get_gl_api (dmabuf->upload->context) & GST_GL_API_GLES2)
+      && (gst_is_dmabuf_memory (gst_buffer_peek_memory (buffer, 0))))
+    return TRUE;
+
+  return FALSE;
+}
+
+static void
+_dma_buf_upload_propose_allocation (gpointer impl, GstQuery * decide_query,
+    GstQuery * query)
+{
+  struct DmabufUpload *dmabuf = impl;
+
+  if (gst_gl_context_check_feature (dmabuf->upload->context,
+          "EXT_image_dma_buf_import")) {
+    /* Nothing to do for now. */
+  }
+}
+
+/* FIXME: include drm_fourcc.h since it is mentioned in
+ * EXT_image_dma_buf_import spec */
+#define fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
+			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+
+static int
+_dma_buf_drm_fourcc_from_info (struct DmabufUpload *upload)
+{
+  GstVideoFormat gst_format =
+      GST_VIDEO_INFO_FORMAT (&upload->upload->priv->in_info);
+  int format;
+
+  GST_DEBUG ("gst video format: %s", gst_video_format_to_string (gst_format));
+
+  switch (gst_format) {
+    case GST_VIDEO_FORMAT_RGB16:
+      /* DRM_FORMAT_RGB565 */
+      format = fourcc_code ('R', 'G', '1', '6');
+      break;
+    case GST_VIDEO_FORMAT_BGRx:
+      /* DRM_FORMAT_XRGB8888 */
+      format = fourcc_code ('X', 'R', '2', '4');
+      break;
+    case GST_VIDEO_FORMAT_BGRA:
+      /* DRM_FORMAT_ARGB8888 */
+      format = fourcc_code ('A', 'R', '2', '4');
+      break;
+    case GST_VIDEO_FORMAT_RGBx:
+      /* DRM_FORMAT_XBGR8888 */
+      format = fourcc_code ('X', 'B', '2', '4');
+      break;
+    case GST_VIDEO_FORMAT_RGBA:
+      /* DRM_FORMAT_ABGR8888 */
+      format = fourcc_code ('A', 'B', '2', '4');
+      break;
+    default:
+      GST_WARNING ("Native DMABUF format unsupported. Converting.");
+      /* DRM_FORMAT_ABGR8888 */
+      format = 0;
+      break;
+  }
+
+  return format;
+}
+
+static void
+_dma_buf_upload_perform_gl_thread (GstGLContext * context,
+    struct DmabufUpload *dmabuf)
+{
+  EGLint attribs[30];
+  gint atti = 0;
+  gint i = 0;
+  gint n_mem = 0;
+  gint n_planes = 0;
+  GstGLMemory *out_gl_mem = NULL;
+  EGLImageKHR img = EGL_NO_IMAGE_KHR;
+  GstGLContextEGL *ctx_egl = NULL;
+  const GstGLFuncs *gl = NULL;
+  gint drm_fourcc = 0;
+
+  GST_LOG_OBJECT (dmabuf->upload, "Attempting upload with DMABUF");
+
+  ctx_egl = GST_GL_CONTEXT_EGL (dmabuf->upload->context);
+  gl = dmabuf->upload->context->gl_vtable;
+  drm_fourcc = _dma_buf_drm_fourcc_from_info (dmabuf);
+
+  attribs[atti++] = EGL_WIDTH;
+  attribs[atti++] = GST_VIDEO_INFO_WIDTH (&dmabuf->upload->priv->in_info);
+  attribs[atti++] = EGL_HEIGHT;
+  attribs[atti++] = GST_VIDEO_INFO_HEIGHT (&dmabuf->upload->priv->in_info);
+
+  attribs[atti++] = EGL_LINUX_DRM_FOURCC_EXT;
+  attribs[atti++] = drm_fourcc;
+
+  n_mem = gst_buffer_n_memory (dmabuf->buffer);
+  n_planes = GST_VIDEO_INFO_N_PLANES (&dmabuf->upload->priv->in_info);
+
+  if (n_mem == n_planes) {
+    /* one memory per plane */
+    for (i = 0; i < n_mem; i++) {
+      switch (i) {
+        case 0:
+          attribs[atti] = EGL_DMA_BUF_PLANE0_FD_EXT;
+          attribs[atti + 2] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+          attribs[atti + 4] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+          break;
+        case 1:
+          attribs[atti] = EGL_DMA_BUF_PLANE1_FD_EXT;
+          attribs[atti + 2] = EGL_DMA_BUF_PLANE1_OFFSET_EXT;
+          attribs[atti + 4] = EGL_DMA_BUF_PLANE1_PITCH_EXT;
+          break;
+        case 2:
+          attribs[atti] = EGL_DMA_BUF_PLANE2_FD_EXT;
+          attribs[atti + 2] = EGL_DMA_BUF_PLANE2_OFFSET_EXT;
+          attribs[atti + 4] = EGL_DMA_BUF_PLANE2_PITCH_EXT;
+          break;
+        default:
+          GST_WARNING_OBJECT (dmabuf->upload, "too many dmabuf planes");
+          return;
+      }
+
+      attribs[atti + 1] =
+          gst_dmabuf_memory_get_fd (gst_buffer_peek_memory (dmabuf->buffer, i));
+      attribs[atti + 3] = 0;
+      attribs[atti + 5] =
+          GST_VIDEO_INFO_PLANE_STRIDE (&dmabuf->upload->priv->in_info, i);
+      atti += 6;
+    }
+  } else if (n_mem == 1) {
+    /* one memory, multiple planes inside it */
+    if (n_planes > 0) {
+      attribs[atti++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+      attribs[atti++] =
+          gst_dmabuf_memory_get_fd (gst_buffer_peek_memory (dmabuf->buffer, 0));
+      attribs[atti++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+      attribs[atti++] =
+          GST_VIDEO_INFO_PLANE_OFFSET (&dmabuf->upload->priv->in_info, 0);
+      attribs[atti++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+      attribs[atti++] =
+          GST_VIDEO_INFO_PLANE_STRIDE (&dmabuf->upload->priv->in_info, 0);
+    }
+
+    if (n_planes > 1) {
+      attribs[atti++] = EGL_DMA_BUF_PLANE1_FD_EXT;
+      attribs[atti++] =
+          gst_dmabuf_memory_get_fd (gst_buffer_peek_memory (dmabuf->buffer, 0));
+      attribs[atti++] = EGL_DMA_BUF_PLANE1_OFFSET_EXT;
+      attribs[atti++] =
+          GST_VIDEO_INFO_PLANE_OFFSET (&dmabuf->upload->priv->in_info, 1);
+      attribs[atti++] = EGL_DMA_BUF_PLANE1_PITCH_EXT;
+      attribs[atti++] =
+          GST_VIDEO_INFO_PLANE_STRIDE (&dmabuf->upload->priv->in_info, 1);
+    }
+
+    if (n_planes > 2) {
+      attribs[atti++] = EGL_DMA_BUF_PLANE2_FD_EXT;
+      attribs[atti++] =
+          gst_dmabuf_memory_get_fd (gst_buffer_peek_memory (dmabuf->buffer, 0));
+      attribs[atti++] = EGL_DMA_BUF_PLANE2_OFFSET_EXT;
+      attribs[atti++] =
+          GST_VIDEO_INFO_PLANE_OFFSET (&dmabuf->upload->priv->in_info, 2);
+      attribs[atti++] = EGL_DMA_BUF_PLANE2_PITCH_EXT;
+      attribs[atti++] =
+          GST_VIDEO_INFO_PLANE_STRIDE (&dmabuf->upload->priv->in_info, 2);
+    }
+  } else {
+    GST_WARNING_OBJECT (dmabuf->upload,
+        "don't know how to wrap a dmabuf with %d "
+        "GstMemories and %d planes", n_mem, n_planes);
+    return;
+  }
+
+  attribs[atti++] = EGL_NONE;
+
+  for (i = 0; i < atti; i++)
+    GST_LOG_OBJECT (dmabuf->upload, "attr %i: %08X", i, attribs[i]);
+
+  img = ctx_egl->eglCreateImage (ctx_egl->egl_display, EGL_NO_CONTEXT,
+      EGL_LINUX_DMA_BUF_EXT, NULL, attribs);
+
+  /* FIXME: maybe just generate a texture and use gst_gl_memory_wrapped_texture
+   * + append so that we can pass a notify desrtoy to destroy the image.
+   * And also to keep gst_gl_memory_setup_buffer for GL_TEXTURE_2D only. */
+
+  *dmabuf->outbuf = gst_buffer_new ();
+  gst_gl_memory_setup_buffer (dmabuf->upload->context,
+      NULL, &dmabuf->upload->priv->out_info, NULL, GL_TEXTURE_EXTERNAL_OES,
+      *dmabuf->outbuf);
+
+  /* Output caps is RGBA */
+  out_gl_mem = (GstGLMemory *) gst_buffer_peek_memory (*dmabuf->outbuf, 0);
+
+  //gl->ActiveTexture (GL_TEXTURE0 + i); // ??
+  gl->BindTexture (GL_TEXTURE_EXTERNAL_OES, out_gl_mem->tex_id);
+  gl->EGLImageTargetTexture2D (GL_TEXTURE_EXTERNAL_OES, img);   // keep track of img ?
+
+  if (GST_IS_GL_BUFFER_POOL (dmabuf->buffer->pool))     // will never be the case
+    gst_gl_buffer_pool_replace_last_buffer (GST_GL_BUFFER_POOL (dmabuf->buffer->
+            pool), dmabuf->buffer);
+
+  ctx_egl->eglDestroyImage (ctx_egl->egl_display, img);
+}
+
+static GstGLUploadReturn
+_dma_buf_upload_perform (gpointer impl, GstBuffer * buffer, GstBuffer ** outbuf)
+{
+  struct DmabufUpload *dmabuf = impl;
+
+  dmabuf->buffer = buffer;
+  dmabuf->outbuf = outbuf;
+
+  gst_gl_context_thread_add (dmabuf->upload->context,
+      (GstGLContextThreadFunc) _dma_buf_upload_perform_gl_thread, dmabuf);
+
+  if (!*dmabuf->outbuf)
+    return GST_GL_UPLOAD_ERROR;
+
+  return GST_GL_UPLOAD_DONE;
+}
+
+static void
+_dma_buf_upload_release (gpointer impl, GstBuffer * buffer)
+{
+}
+
+static void
+_dma_buf_upload_free (gpointer impl)
+{
+}
+
+static GstStaticCaps _dma_buf_upload_caps =
+GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE_WITH_FEATURES
+    ("memory:" GST_ALLOCATOR_DMABUF, "{ RGBx, RGBA, BGRx, BGRA, RGB16 }"));
+
+static const UploadMethod _dma_buf_upload = {
+  "Dmabuf",
+  0,
+  &_dma_buf_upload_caps,
+  &_dma_buf_upload_new,
+  &_dma_buf_upload_transform_caps,
+  &_dma_buf_upload_accept,
+  &_dma_buf_upload_propose_allocation,
+  &_dma_buf_upload_perform,
+  &_dma_buf_upload_release,
+  &_dma_buf_upload_free
+};
+
+#endif /* GST_GL_HAVE_GLES2 */
+
 #endif
 
 struct GLUploadMeta
@@ -870,6 +1161,9 @@ static const UploadMethod _raw_data_upload = {
 static const UploadMethod *upload_methods[] = { &_gl_memory_upload,
 #if GST_GL_HAVE_PLATFORM_EGL
   &_egl_image_upload,
+#if GST_GL_HAVE_GLES2
+  &_dma_buf_upload,
+#endif
 #endif
   &_upload_meta_upload, &_raw_data_upload
 };
