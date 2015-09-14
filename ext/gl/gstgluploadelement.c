@@ -234,7 +234,7 @@ gst_gl_upload_element_prepare_output_buffer (GstBaseTransform * bt,
   /* basetransform doesn't unref if they're the same */
   if (buffer == *outbuf)
     gst_buffer_unref (*outbuf);
-  else
+  else if (*outbuf)
     bclass->copy_metadata (bt, buffer, *outbuf);
 
   return GST_FLOW_OK;

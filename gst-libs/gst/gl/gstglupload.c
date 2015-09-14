@@ -1468,6 +1468,7 @@ gst_gl_upload_perform_with_buffer (GstGLUpload * upload, GstBuffer * buffer,
 do { \
   if (!_upload_find_method (upload)) { \
     GST_OBJECT_UNLOCK (upload); \
+    GST_WARNING_OBJECT (upload, "Cannot find any upload method"); \
     return FALSE; \
   } \
   goto restart; \
