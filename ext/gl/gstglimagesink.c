@@ -1776,6 +1776,9 @@ gst_glimage_sink_on_resize (GstGLImageSink * gl_sink, gint width, gint height)
   gboolean do_reshape;
   gboolean reconfigure;
 
+  if (width <= 0 || height <= 0)
+    return;
+
   GST_DEBUG_OBJECT (gl_sink, "GL Window resized to %ux%u", width, height);
 
   /* check if a client reshape callback is registered */
