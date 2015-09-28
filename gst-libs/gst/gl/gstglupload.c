@@ -512,7 +512,6 @@ _dma_buf_upload_transform_caps (GstGLContext * context,
 
   if (direction == GST_PAD_SINK) {
     ret = _set_caps_features (caps, GST_CAPS_FEATURE_MEMORY_GL_MEMORY);
-    gst_caps_set_simple (ret, "format", G_TYPE_STRING, "RGBA", NULL);
   } else {
     ret = _set_caps_features (caps, "memory:" GST_ALLOCATOR_DMABUF);
     /* FIXME replace with { RGBA, BGRA, RGBx, BGRx, RGB16 } */
@@ -527,6 +526,11 @@ _dma_buf_upload_accept (gpointer impl, GstBuffer * buffer, GstCaps * in_caps,
     GstCaps * out_caps)
 {
   struct DmabufUpload *dmabuf = impl;
+  GstCapsFeatures *features = NULL;
+
+  features = gst_caps_get_features (in_caps, 0);
+  if (!gst_caps_features_contains (features, "memory:" GST_ALLOCATOR_DMABUF))
+    return FALSE;
 
   if ((gst_gl_context_get_gl_api (dmabuf->upload->context) & GST_GL_API_GLES2)
       && (gst_is_dmabuf_memory (gst_buffer_peek_memory (buffer, 0))))
