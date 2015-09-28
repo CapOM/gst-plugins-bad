@@ -121,11 +121,12 @@ static const gfloat from_rgb_bt709_vcoeff[] = { 0.440654, -0.400285, -0.040370 }
 
 /* Channel reordering for XYZ <-> ZYX conversion */
 static const gchar frag_REORDER[] =
+      "%s\n"
       "#ifdef GL_ES\n"
       "precision mediump float;\n"
       "#endif\n"
       "varying vec2 v_texcoord;\n"
-      "uniform sampler2D tex;\n"
+      "uniform %s tex;\n"
       "uniform vec2 tex_scale0;\n"
       "uniform vec2 tex_scale1;\n"
       "uniform vec2 tex_scale2;\n"
@@ -471,6 +472,8 @@ struct _GstGLColorConvertPrivate
   GstGLMemory *in_tex[GST_VIDEO_MAX_PLANES];
   GstGLMemory *out_tex[GST_VIDEO_MAX_PLANES];
 
+  GLenum in_tex_target;
+
   GLuint vao;
   GLuint vertex_buffer;
   GLuint vbo_indices;
@@ -813,6 +816,13 @@ _gst_gl_color_convert_perform_unlocked (GstGLColorConvert * convert,
     return gst_buffer_ref (inbuf);
 
   convert->inbuf = inbuf;
+  convert->priv->in_tex_target = 0;
+
+  if (gst_buffer_n_memory (convert->inbuf) > 0) {
+    GstMemory *memory = gst_buffer_peek_memory (convert->inbuf, 0);
+    if (gst_is_gl_memory (memory))
+      convert->priv->in_tex_target = ((GstGLMemory *) memory)->tex_target;
+  }
 
   gst_gl_context_thread_add (convert->context,
       (GstGLContextThreadFunc) _do_convert, convert);
@@ -947,6 +957,7 @@ _RGB_to_RGB (GstGLColorConvert * convert)
   const gchar *out_format_str = gst_video_format_to_string (out_format);
   gchar *pixel_order = _RGB_pixel_order (in_format_str, out_format_str);
   gchar *alpha = NULL;
+  gboolean is_external = FALSE;
 
   info->in_n_textures = 1;
   info->out_n_textures = 1;
@@ -961,8 +972,15 @@ _RGB_to_RGB (GstGLColorConvert * convert)
     }
     alpha = g_strdup_printf ("t.%c = 1.0;", input_alpha_channel);
   }
-  info->frag_prog = g_strdup_printf (frag_REORDER, alpha ? alpha : "",
-      pixel_order[0], pixel_order[1], pixel_order[2], pixel_order[3]);
+#if GST_GL_HAVE_PLATFORM_EGL
+  is_external = convert->priv->in_tex_target == GL_TEXTURE_EXTERNAL_OES;
+#endif
+
+  info->frag_prog = g_strdup_printf (frag_REORDER,
+      is_external ? "#extension GL_OES_EGL_image_external : require" : "",
+      is_external ? "samplerExternalOES" : "sampler2D",
+      alpha ? alpha : "", pixel_order[0], pixel_order[1],
+      pixel_order[2], pixel_order[3]);
   info->shader_tex_names[0] = "tex";
 
   g_free (alpha);
@@ -1200,6 +1218,11 @@ _RGB_to_GRAY (GstGLColorConvert * convert)
   const gchar *in_format_str = gst_video_format_to_string (in_format);
   gchar *pixel_order = _RGB_pixel_order (in_format_str, "rgba");
   gchar *alpha = NULL;
+  gboolean is_external = FALSE;
+
+#if GST_GL_HAVE_PLATFORM_EGL
+  is_external = convert->priv->in_tex_target == GL_TEXTURE_EXTERNAL_OES;
+#endif
 
   info->in_n_textures = 1;
   info->out_n_textures = 1;
@@ -1210,7 +1233,10 @@ _RGB_to_GRAY (GstGLColorConvert * convert)
 
   switch (GST_VIDEO_INFO_FORMAT (&convert->out_info)) {
     case GST_VIDEO_FORMAT_GRAY8:
-      info->frag_prog = g_strdup_printf (frag_REORDER, alpha ? alpha : "",
+      info->frag_prog = g_strdup_printf (frag_REORDER,
+          is_external ? "#extension GL_OES_EGL_image_external : require" : "",
+          is_external ? "samplerExternalOES" : "sampler2D",
+          alpha ? alpha : "",
           pixel_order[0], pixel_order[0], pixel_order[0], pixel_order[3]);
       break;
     default:
@@ -1228,6 +1254,7 @@ _GRAY_to_RGB (GstGLColorConvert * convert)
   GstVideoFormat out_format = GST_VIDEO_INFO_FORMAT (&convert->out_info);
   const gchar *out_format_str = gst_video_format_to_string (out_format);
   gchar *pixel_order = _RGB_pixel_order ("rgba", out_format_str);
+  gboolean is_external = FALSE;
   gboolean texture_rg =
       gst_gl_context_check_feature (convert->context, "GL_EXT_texture_rg")
       || gst_gl_context_check_gl_version (convert->context, GST_GL_API_GLES2, 3,
@@ -1236,14 +1263,20 @@ _GRAY_to_RGB (GstGLColorConvert * convert)
       || gst_gl_context_check_gl_version (convert->context, GST_GL_API_OPENGL3,
       3, 0);
 
+#if GST_GL_HAVE_PLATFORM_EGL
+  is_external = convert->priv->in_tex_target == GL_TEXTURE_EXTERNAL_OES;
+#endif
+
   info->in_n_textures = 1;
   info->out_n_textures = 1;
   info->shader_tex_names[0] = "tex";
 
   switch (GST_VIDEO_INFO_FORMAT (&convert->in_info)) {
     case GST_VIDEO_FORMAT_GRAY8:
-      info->frag_prog = g_strdup_printf (frag_REORDER, "", pixel_order[0],
-          pixel_order[0], pixel_order[0], pixel_order[3]);
+      info->frag_prog = g_strdup_printf (frag_REORDER,
+          is_external ? "#extension GL_OES_EGL_image_external : require" : "",
+          is_external ? "samplerExternalOES" : "sampler2D",
+          "", pixel_order[0], pixel_order[0], pixel_order[0], pixel_order[3]);
       break;
     case GST_VIDEO_FORMAT_GRAY16_LE:
     {
