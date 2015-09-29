@@ -711,6 +711,9 @@ _dma_buf_upload_perform_gl_thread (GstGLContext * context,
   img = ctx_egl->eglCreateImage (ctx_egl->egl_display, EGL_NO_CONTEXT,
       EGL_LINUX_DMA_BUF_EXT, NULL, attribs);
 
+  if (img == EGL_NO_IMAGE_KHR)
+    GST_ERROR_OBJECT (dmabuf->upload, "Failed to create EGLImage");
+
   /* FIXME: maybe just generate a texture and use gst_gl_memory_wrapped_texture
    * + append so that we can pass a notify desrtoy to destroy the image.
    * And also to keep gst_gl_memory_setup_buffer for GL_TEXTURE_2D only. */
