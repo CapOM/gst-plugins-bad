@@ -1885,7 +1885,7 @@ gst_glimage_sink_on_draw (GstGLImageSink * gl_sink)
 
   /* make sure that the environnement is clean */
   gst_gl_context_clear_shader (gl_sink->context);
-  gl->BindTexture (GL_TEXTURE_2D, tex_target);
+  gl->BindTexture (tex_target, 0);
 
 #if GST_GL_HAVE_OPENGL
   if (USING_OPENGL (gl_sink->context))
