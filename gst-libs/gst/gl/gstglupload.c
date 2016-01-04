@@ -645,7 +645,8 @@ struct DmabufUpload
 };
 
 static GstStaticCaps _dma_buf_upload_caps =
-GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE (GST_GL_MEMORY_VIDEO_FORMATS_STR));
+GST_STATIC_CAPS (GST_VIDEO_CAPS_MAKE_WITH_FEATURES
+    (GST_CAPS_FEATURE_MEMORY_DMABUF, GST_GL_MEMORY_VIDEO_FORMATS_STR));
 
 static gpointer
 _dma_buf_upload_new (GstGLUpload * upload)
@@ -679,7 +680,7 @@ _dma_buf_upload_transform_caps (GstGLContext * context,
 
     ret =
         _set_caps_features_with_passthrough (caps,
-        GST_CAPS_FEATURE_MEMORY_SYSTEM_MEMORY, passthrough);
+        GST_CAPS_FEATURE_MEMORY_DMABUF, passthrough);
 
     n = gst_caps_get_size (ret);
     for (i = 0; i < n; i++) {
